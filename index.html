@@ -183,7 +183,7 @@
 
   <script>
     // ---- CONFIG: paste your Cloudflare Worker URL here (no trailing slash) ----
-    const WORKER = 'https://behance-pdf.kingsleymaryn.workers.dev/';
+    const WORKER = 'behance-pdf.kingsleymaryn.workers.dev';
     // ---------------------------------------------------------------------------
 
     const $ = (id) => document.getElementById(id);
@@ -199,7 +199,10 @@
 
     async function getHtml(projectUrl) {
       const r = await fetch(`${WORKER}/?page=${encodeURIComponent(projectUrl)}`);
-      if (!r.ok) throw new Error(`Behance returned ${r.status} for the project page.`);
+      if (!r.ok) {
+        const body = (await r.text()).replace(/\s+/g, ' ').slice(0, 160);
+        throw new Error(`Could not load the project page (status ${r.status}, via ${r.headers.get('X-Source') || 'worker'}). ${body}`);
+      }
       return r.text();
     }
 
