@@ -87,6 +87,7 @@ const WORKER = 'https://behance-pdf.kingsleymaryn.workers.dev/';
 
 const $ = (id) => document.getElementById(id);
 const MAX_PT = 14000; // PDF viewers choke above ~14400 units per side
+const PAGE_W = 1400;  // Behance's project canvas width
 
 function setStatus(msg, isErr = false) {
   $('status').textContent = msg;
@@ -122,7 +123,7 @@ function extractImages(html) {
 // URLs to try for one image, best first.
 function candidates(item, quality) {
   const order = quality === 'medium'
-    ? ['max_1200', '1400']
+    ? ['1400_webp', '1400', 'max_1200']
     : ['source', 'fs', '2800_opt_1', 'max_3840', 'max_1200'];
   const urls = order.map((s) => `${item.prefix}/${s}/${item.file}`);
   item.seen.forEach((s) => urls.push(s.url)); // fallback: whatever the page itself listed
@@ -204,8 +205,10 @@ async function run() {
       if (!bytes) { skipped++; setProgress(i + 1, items.length); continue; }
       try {
         const img = await embed(pdf, bytes);
-        const s = Math.min(1, MAX_PT / Math.max(img.width, img.height));
-        const w = img.width * s, h = img.height * s;
+        // Same as Behance: every image fills the canvas width, height follows the aspect ratio.
+        const dh = img.height * (PAGE_W / img.width);
+        const s = Math.min(1, MAX_PT / dh);
+        const w = PAGE_W * s, h = dh * s;
         pdf.addPage([w, h]).drawImage(img, { x: 0, y: 0, width: w, height: h });
       } catch (_) { skipped++; }
       setProgress(i + 1, items.length);
