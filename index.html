@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Behance to PDF</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --ink: #15171c;
+      --muted: #6a6f7a;
+      --line: #d9dce2;
+      --accent: #0057ff;
+      --accent-ink: #ffffff;
+      box-sizing: border-box;
+      padding-top: env(safe-area-inset-top, 0px);
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #101216;
+        --ink: #eef0f4;
+        --muted: #8f95a1;
+        --line: #2a2e37;
+        --accent: #4d8bff;
+        --accent-ink: #07101f;
+      }
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: inherit;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+
+    main {
+      max-width: 34rem;
+      margin: 0 auto;
+      padding: 12vh 1.25rem 3rem;
+    }
+
+    h1 {
+      font-size: 2rem;
+      line-height: 1.15;
+      margin: 0 0 .5rem;
+      letter-spacing: -.02em;
+    }
+
+    p.lede {
+      color: var(--muted);
+      margin: 0 0 2rem;
+    }
+
+    label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: .4rem;
+    }
+
+    input[type=url],
+    select {
+      width: 100%;
+      font: inherit;
+      color: var(--ink);
+      background: transparent;
+      border: 1.5px solid var(--line);
+      border-radius: 8px;
+      padding: .8rem .9rem;
+    }
+
+    input[type=url]:focus,
+    select:focus,
+    button:focus-visible,
+    a.btn:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    .row {
+      margin-bottom: 1.1rem;
+    }
+
+    button,
+    a.btn {
+      display: inline-block;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      text-align: center;
+      background: var(--accent);
+      color: var(--accent-ink);
+      border: 0;
+      border-radius: 8px;
+      padding: .85rem 1.3rem;
+      width: 100%;
+    }
+
+    button:disabled {
+      opacity: .5;
+      cursor: default;
+    }
+
+    #progress {
+      margin-top: 1.5rem;
+      display: none;
+    }
+
+    .bar {
+      height: 6px;
+      background: var(--line);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .bar>div {
+      height: 100%;
+      width: 0;
+      background: var(--accent);
+    }
+
+    #status {
+      margin: .6rem 0 0;
+      color: var(--muted);
+      font-size: .95rem;
+      word-break: break-word;
+    }
+
+    #status.err {
+      color: #d4351c;
+    }
+
+    #result {
+      margin-top: 1rem;
+      display: none;
+    }
+
+    #result a.btn {
+      margin-top: .6rem;
+      background: transparent;
+      color: var(--ink);
+      border: 1.5px solid var(--line);
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <h1>Behance to PDF</h1>
+    <p class="lede">Paste a project link. You get a PDF with one page per image, no watermark.</p>
+
+    <div class="row">
+      <label for="url">Project link</label>
+      <input id="url" type="url" inputmode="url" autocomplete="off" placeholder="https://www.behance.net/gallery/…">
+    </div>
+    <div class="row">
+      <label for="quality">Quality</label>
+      <select id="quality">
+        <option value="full">Full (original files, larger PDF)</option>
+        <option value="medium">Medium (smaller, safer for big projects)</option>
+      </select>
+    </div>
+    <button id="go">Make PDF</button>
+
+    <div id="progress">
+      <div class="bar">
+        <div id="fill"></div>
+      </div>
+      <p id="status"></p>
+    </div>
+    <div id="result"></div>
+  </main>
+
+  <script>
+    // ---- CONFIG: paste your Cloudflare Worker URL here (no trailing slash) ----
+    const WORKER = 'https://behance-pdf.kingsleymaryn.workers.dev/';
+    // ---------------------------------------------------------------------------
+
+    const $ = (id) => document.getElementById(id);
+    const MAX_PT = 14000; // PDF viewers choke above ~14400 units per side
+
+    function setStatus(msg, isErr = false) {
+      $('status').textContent = msg;
+      $('status').className = isErr ? 'err' : '';
+    }
+    function setProgress(done, total) {
+      $('fill').style.width = total ? Math.round((done / total) * 100) + '%' : '0%';
+    }
+
+    async function getHtml(projectUrl) {
+      const r = await fetch(`${WORKER}/?page=${encodeURIComponent(projectUrl)}`);
+      if (!r.ok) throw new Error(`Behance returned ${r.status} for the project page.`);
+      return r.text();
+    }
+
+    // Find every project_modules image in the page, in order of first appearance.
+    function extractImages(html) {
+      const text = html.replace(/\\u002F/gi, '/').replace(/\\\//g, '/').replace(/&amp;/g, '&');
+      const re = /(https:\/\/[^"'\s\\]*?project_modules)\/([^\/"'\s\\]+)\/([\w.\-]+\.(?:jpe?g|png|gif|webp))/gi;
+      const map = new Map(); // filename -> { prefix, file, seen: [{size,url}] }
+      let m;
+      while ((m = re.exec(text))) {
+        const [url, prefix, size, file] = m;
+        if (!map.has(file)) map.set(file, { prefix, file, seen: [] });
+        map.get(file).seen.push({ size, url });
+      }
+      return [...map.values()];
+    }
+
+    // URLs to try for one image, best first.
+    function candidates(item, quality) {
+      const order = quality === 'medium'
+        ? ['max_1200', '1400']
+        : ['source', 'fs', '2800_opt_1', 'max_3840', 'max_1200'];
+      const urls = order.map((s) => `${item.prefix}/${s}/${item.file}`);
+      item.seen.forEach((s) => urls.push(s.url)); // fallback: whatever the page itself listed
+      return [...new Set(urls)];
+    }
+
+    async function fetchImage(item, quality) {
+      for (const url of candidates(item, quality)) {
+        try {
+          const r = await fetch(`${WORKER}/?img=${encodeURIComponent(url)}`);
+          const type = r.headers.get('Content-Type') || '';
+          if (r.ok && type.startsWith('image/')) return new Uint8Array(await r.arrayBuffer());
+        } catch (_) { /* try next candidate */ }
+      }
+      return null;
+    }
+
+    // pdf-lib only takes JPEG and PNG, so convert anything else (GIF, WebP) to JPEG.
+    async function toJpeg(bytes) {
+      const bmp = await createImageBitmap(new Blob([bytes]));
+      const c = document.createElement('canvas');
+      c.width = bmp.width; c.height = bmp.height;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(bmp, 0, 0);
+      const blob = await new Promise((res) => c.toBlob(res, 'image/jpeg', 0.92));
+      return new Uint8Array(await blob.arrayBuffer());
+    }
+
+    async function embed(pdf, bytes) {
+      if (bytes[0] === 0xff && bytes[1] === 0xd8) return pdf.embedJpg(bytes);
+      if (bytes[0] === 0x89 && bytes[1] === 0x50) return pdf.embedPng(bytes);
+      return pdf.embedJpg(await toJpeg(bytes));
+    }
+
+    function slugFrom(url) {
+      const parts = new URL(url).pathname.split('/').filter(Boolean);
+      return (parts[2] || parts[1] || 'behance-project').toLowerCase();
+    }
+
+    async function run() {
+      const raw = $('url').value.trim();
+      const quality = $('quality').value;
+      $('result').style.display = 'none';
+
+      let url;
+      try {
+        url = new URL(raw);
+        if (!/(^|\.)behance\.net$/.test(url.hostname)) throw 0;
+      } catch {
+        $('progress').style.display = 'block';
+        setProgress(0, 0);
+        return setStatus('That is not a Behance link. Paste the full project URL.', true);
+      }
+      if (WORKER.includes('YOUR-WORKER')) {
+        $('progress').style.display = 'block';
+        return setStatus('Set your Worker URL in the WORKER line of index.html first.', true);
+      }
+
+      $('go').disabled = true;
+      $('progress').style.display = 'block';
+      setProgress(0, 0);
+
+      try {
+        setStatus('Loading project…');
+        const html = await getHtml(url.toString());
+        const items = extractImages(html);
+        if (!items.length) {
+          throw new Error(`Found no images (page size: ${html.length} characters). The project may be private, adult-gated, or Behance changed its page format.`);
+        }
+
+        const pdf = await PDFLib.PDFDocument.create();
+        let skipped = 0;
+        for (let i = 0; i < items.length; i++) {
+          setStatus(`Downloading image ${i + 1} of ${items.length}…`);
+          const bytes = await fetchImage(items[i], quality);
+          if (!bytes) { skipped++; setProgress(i + 1, items.length); continue; }
+          try {
+            const img = await embed(pdf, bytes);
+            const s = Math.min(1, MAX_PT / Math.max(img.width, img.height));
+            const w = img.width * s, h = img.height * s;
+            pdf.addPage([w, h]).drawImage(img, { x: 0, y: 0, width: w, height: h });
+          } catch (_) { skipped++; }
+          setProgress(i + 1, items.length);
+        }
+
+        if (skipped === items.length) throw new Error('Every image failed to download or embed.');
+
+        setStatus('Building PDF…');
+        const blob = new Blob([await pdf.save()], { type: 'application/pdf' });
+        const href = URL.createObjectURL(blob);
+        const name = slugFrom(url.toString()) + '.pdf';
+
+        const a = document.createElement('a');
+        a.href = href; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+
+        const mb = (blob.size / 1048576).toFixed(1);
+        setStatus(`Done: ${items.length - skipped} pages, ${mb} MB.` + (skipped ? ` ${skipped} image(s) skipped.` : ''));
+        $('result').innerHTML = `<a class="btn" href="${href}" download="${name}">Download again</a>`;
+        $('result').style.display = 'block';
+      } catch (e) {
+        setStatus(e.message || String(e), true);
+      } finally {
+        $('go').disabled = false;
+      }
+    }
+
+    $('go').addEventListener('click', run);
+    $('url').addEventListener('keydown', (e) => { if (e.key === 'Enter') run(); });
+  </script>
+</body>
+
+</html>
